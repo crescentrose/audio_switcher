@@ -1,17 +1,40 @@
+//! Enumerating, connecting to and changing the state of Bluetooth devices
+//! connected to the Windows system.
+
 use std::{
     fmt::{Debug, Display},
-    mem::size_of,
+    mem::{self, size_of},
+    ops::Deref,
 };
 
-use windows::Win32::{
-    Devices::Bluetooth::{
-        BluetoothFindDeviceClose, BluetoothFindFirstDevice, BluetoothFindNextDevice,
-        BLUETOOTH_ADDRESS, BLUETOOTH_DEVICE_INFO, BLUETOOTH_DEVICE_SEARCH_PARAMS,
+use windows::{
+    core::GUID,
+    Win32::{
+        Devices::Bluetooth::{
+            BluetoothEnumerateInstalledServices, BluetoothFindDeviceClose,
+            BluetoothFindFirstDevice, BluetoothFindNextDevice, BluetoothSetServiceState,
+            BLUETOOTH_ADDRESS, BLUETOOTH_DEVICE_INFO, BLUETOOTH_DEVICE_SEARCH_PARAMS,
+        },
+        Foundation::{BOOL, HANDLE},
     },
-    Foundation::{BOOL, HANDLE},
 };
 
-use super::{error::Error, Result, Time};
+use super::{error::Error, radio, util, Result, Time};
+
+/// Wraps the device info struct from the Win32 API for future calls to the Windows API.
+struct BluetoothDeviceInfo(BLUETOOTH_DEVICE_INFO);
+impl Deref for BluetoothDeviceInfo {
+    type Target = BLUETOOTH_DEVICE_INFO;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Debug for BluetoothDeviceInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "reference to internal Win32 API structure")
+    }
+}
 
 #[non_exhaustive]
 #[allow(dead_code)]
@@ -43,6 +66,37 @@ pub struct Device {
     pub name: String,
     pub last_seen: Time,
     pub last_connected: Time,
+    device_info: BluetoothDeviceInfo,
+}
+
+pub enum Mode {
+    Enable,
+    Disable,
+}
+
+impl Device {
+    /// Enables or disables a specific service (identified by a GUID)
+    pub fn set_service_state(&self, service_guid: &str, mode: Mode) {
+        // BluetoothSetServiceState(, pbtdi, pguidservice, dwserviceflags)
+    }
+
+    pub fn get_device_services(&self, radio: &radio::Radio) {
+        let mut count: u32 = 0;
+        let mut guid = GUID::zeroed();
+        let service: Option<*mut GUID> = Some(&mut guid);
+
+        while (unsafe {
+            BluetoothEnumerateInstalledServices(
+                radio.handle,
+                &self.device_info.0,
+                &mut count,
+                service,
+            )
+        } != 0)
+        {
+            println!("{}, {}, {:?}", self.name, count, service);
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -105,9 +159,10 @@ impl Into<Device> for BLUETOOTH_DEVICE_INFO {
             connected: self.fConnected.into(),
             remembered: self.fRemembered.into(),
             authenticated: self.fAuthenticated.into(),
-            name: u16_slice_to_string(self.szName.as_slice()),
+            name: util::u16_slice_to_string(self.szName.as_slice()),
             last_seen: self.stLastSeen.into(),
             last_connected: self.stLastUsed.into(),
+            device_info: BluetoothDeviceInfo(self.clone()),
         }
     }
 }
@@ -159,17 +214,6 @@ pub fn get_bluetooth_devices() -> Result<Vec<Device>> {
     }
 
     Ok(devices)
-}
-
-/// Helper method to convert the helpfully null-padded UTF-16 string given to us by the Windows API into a proper Rust [String].
-///
-/// # Arguments
-///
-/// * `slice` - A slice of 16-bit integers representing a (hopefully) valid, null-padded UTF-16 string.
-fn u16_slice_to_string(slice: &[u16]) -> String {
-    String::from_utf16_lossy(slice)
-        .trim_matches(char::from(0))
-        .to_string()
 }
 
 /// Helper method to convert the class identifier number into the device class. Currently only works for two classes...
